@@ -1,0 +1,127 @@
+# Debian JessiE with Java 7 installed.
+# Build image with:  docker build -t clelson/gog:v1 .
+FROM debian:jessie
+#MAINTAINER Clelson Salles Rodrigues, https://github.com/clelson
+
+# Instalação do java7
+
+
+RUN \
+    echo -e "\n\n\tGOG - Passo 01 - Adicionando o repositório webupd8\n"  && \
+    echo "deb http://ppa.launchpad.net/webupd8team/java/ubuntu trusty main" | tee /etc/apt/sources.list.d/webupd8team-java.list  && \
+    echo "deb-src http://ppa.launchpad.net/webupd8team/java/ubuntu trusty main" | tee -a /etc/apt/sources.list.d/webupd8team-java.list  && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys EEA14886  && \
+    apt-get update  && \
+    \
+    \
+    echo -e "\n\n\tGOG - Passo 02 - Instalando o Java\n"  && \
+    echo debconf shared/accepted-oracle-license-v1-1 select true | debconf-set-selections  && \
+    echo debconf shared/accepted-oracle-license-v1-1 seen true | debconf-set-selections  && \
+    DEBIAN_FRONTEND=noninteractive  apt-get install -y --force-yes oracle-java7-installer oracle-java7-set-default  && \
+    \
+    \
+    echo "===> clean up..."  && \
+    rm -rf /var/cache/oracle-jdk7-installer  && \
+    apt-get clean  && \
+    rm -rf /var/lib/apt/lists/*
+    
+
+# Instalação do Maven
+ENV MAVEN_VERSION 3.3.9
+
+RUN echo -e "\n\n\tGOG - Passo 03 - Instalando o Maven\n"
+
+RUN apt-get update && \
+    apt-get -y install curl && \
+    curl --insecure -fsSL https://archive.apache.org/dist/maven/maven-3/$MAVEN_VERSION/binaries/apache-maven-$MAVEN_VERSION-bin.tar.gz | tar xzf - -C /usr/share \
+  && mv /usr/share/apache-maven-$MAVEN_VERSION /usr/share/maven \
+  && ln -s /usr/share/maven/bin/mvn /usr/bin/mvn
+
+ENV MAVEN_HOME /usr/share/maven
+
+# Instalação do git commands
+RUN echo -e "\n\n\tGOG - Passo 04 - Instalando o Git\n"
+RUN apt-get -y install git
+
+# Instalação do Jboss
+RUN echo -e "\n\n\tGOG - Passo 05 - Instalando o Jboss\n"
+ENV JBOSS_HOME /opt/jboss-as-7.1.1.Final
+WORKDIR /opt
+RUN wget --quiet http://download.jboss.org/jbossas/7.1/jboss-as-7.1.1.Final/jboss-as-7.1.1.Final.tar.gz \
+ && tar -zxf jboss-as-7.1.1.Final.tar.gz -C /opt \
+ && rm -rf /opt/jboss-as-7.1.1.Final.tar.gz
+
+# Obtem o código do GOG e realiza a build do sistema
+RUN echo -e "\n\n\tGOG - Passo 06 - Obtendo o código do GOG no GitHub\n"
+RUN mkdir /opt/GOG 
+WORKDIR /opt/GOG 
+RUN git clone https://github.com/culturagovbr/GOG.git
+
+# Configura a aplicação para criar o modelo de dados quando executar a primeira vez.
+RUN echo -e "\n\n\tGOG - Passo 07 - Configurando o Jboss para executar na primeira vez\n"
+
+RUN sed -i -r 's/<!-- <property name=\"hibernate.hbm2ddl.auto\" value=\"update\" \/>  -->/<property name=\"hibernate.hbm2ddl.auto\" value=\"update\" \/>/' /opt/GOG/GOG/src/main/resources/META-INF/persistence.xml 
+# Configura a aplicação para remover as VIEWS criadas durante a montagem da DDL do banco
+# RUN sed -i -r 's/<\/properties>/\t<property name=\"javax.persistence.schema-generation.drop-source\" value=\"DROP TABLE vwestatisticasmanifestacao;DROP TABLE vwultimotramite;\" \/>\n\t\t<\/properties>/'  /opt/GOG/GOG/src/main/resources/META-INF/persistence.xml 
+# Configura a aplicação para carregar os dados iniciais do banco de dados 
+# RUN sed -i -r 's/<\/properties>/\t<property name=\"javax.persistence.sql-load-script-source\" value=\"ScriptCargaDominio.sql\" \/>\n\t\t<\/properties>/'  /opt/GOG/GOG/src/main/resources/META-INF/persistence.xml \
+#     \
+RUN cat /opt/GOG/GOG/src/main/resources/META-INF/persistence.xml
+
+# Monta a Build do sistema "GOG.war"
+RUN echo -e "\n\n\tGOG - Passo 08 - Monta a build do GOG utilizando o Maven\n"
+WORKDIR /opt/GOG/GOG
+RUN mvn --quiet package
+
+RUN echo -e "\n\n\tGOG - Passo 09 - Prepara o ambiente para execução da aplicação\n"
+# Instala postgresql-client, visando executar comandos SQL no banco de dados
+RUN apt-get install -y postgresql-client
+# Prepara as portas do servidor de aplicação
+EXPOSE 8080 8443 9990
+# Preparação do ambiente para o Jboss
+WORKDIR /opt
+COPY standalone.xml /opt/jboss-as-7.1.1.Final/standalone/configuration/
+COPY modules_jboss /opt/jboss-as-7.1.1.Final/modules
+# Inclui os arquivos bash com de comandos para configurar e iniciar o Jboss
+ADD run.sh /opt/run.sh
+ADD set_jboss_admin_pass.sh /opt/set_jboss_admin_pass.sh
+# COPY GOG.sh /opt
+RUN echo -e "\n\n... Inclui os arquivos para execução da carga de dados"
+COPY carregaDados.sh /opt/
+COPY ScriptCargaDominio.sql /opt/
+COPY ScriptCargaComplementar.sql /opt/
+COPY ScriptCreateVWEstatisticasManifestacao.sql /opt/
+COPY ScriptCreateVWUltimoTramite.sql /opt/
+
+
+
+RUN chmod +xwr /opt/*.sh
+
+VOLUME /root/.m2
+VOLUME /opt
+
+
+RUN echo -e "\n\n\tGOG - Passo 10 - Disponibiliza o comando de execução\n"
+CMD ["sh", "-c", "/opt/run.sh"]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
